@@ -12,7 +12,9 @@ static size_t H5Z_filter_calib(unsigned int flags, size_t cd_nelmts,
 
 #define CACHE_CALIB
 
-#define AGIPD_v1 0x00010001ull
+#define PEDESTAL_v1 0x00010001ull
+#define AGIPD_v1 0x00020001ull
+#define AGIPD_v2 0x00020002ull
 #define H5CALIB_MAGIC 0x6290D662ull
 
 const H5Z_class2_t H5Z_calib[1] = {
@@ -50,10 +52,17 @@ typedef struct calib_config_t {
   char * calib_path;
   uint32_t file_magic;
   uint32_t calib_alg;
-  hsize_t cell_id;
   hsize_t image_id;
-  hsize_t * calib_shape;  
+  hsize_t * calib_shape;
+  void * alg_config;
 } calib_config_t;
+
+typedef struct AGIPD_v1_config_t{
+  hsize_t cell_id;
+} AGIPD_v1_config_t;
+
+/* For now we can use the same config for v1 and v2 */
+typedef AGIPD_v1_config_t AGIPD_v2_config_t;
 
 typedef struct dataset_cache_t {
   char * path;
@@ -91,7 +100,7 @@ static hid_t find_calib_file(int id, uint32_t file_magic){
 }
 
 static calib_config_t str_to_config(void * p){
-  calib_config_t ret;  
+  calib_config_t ret;
   ret.config_str_len = 0;
   /* First check for the h5calib magic */
   uint32_t * u = (uint32_t *)p;
@@ -102,15 +111,50 @@ static calib_config_t str_to_config(void * p){
   ret.file_magic = u[1];
   ret.calib_alg = u[2];
 
+  if(ret.calib_alg == PEDESTAL_v1){
+    ret.alg_config = NULL;
+    ret.image_id = u[3];
+    ret.calib_shape = malloc(sizeof(hsize_t)*3);
+    ret.calib_shape[0] = 1;
+    ret.calib_shape[1] = u[4];
+    ret.calib_shape[2] = u[5];
+    /* and finally the raw and calib paths */
+    char * s = (char *)(u+6);
+    ret.raw_path = strdup(s);
+    s += strlen(ret.raw_path)+1;
+    ret.calib_path = strdup(s);
+    s += strlen(ret.calib_path)+1;
+    /* calculate all the space this takes */
+    ret.config_str_len = s-(char *)p;
+
   /* Currently we only have one calibration algorithm, AGIPD_v1 */
-  if(ret.calib_alg == AGIPD_v1){
+  }else if(ret.calib_alg == AGIPD_v1){
+    ret.alg_config = malloc(sizeof(AGIPD_v1_config_t));
     /* get cell_id, image_id and calibration_shape */
-    ret.cell_id = u[3];
+    ((AGIPD_v1_config_t *)ret.alg_config)->cell_id = u[3];
     ret.image_id = u[4];
     ret.calib_shape = malloc(sizeof(hsize_t)*3);
     ret.calib_shape[0] = u[5];
     ret.calib_shape[1] = u[6];
     ret.calib_shape[2] = u[7];
+    /* and finally the raw and calib paths */
+    char * s = (char *)(u+8);
+    ret.raw_path = strdup(s);
+    s += strlen(ret.raw_path)+1;
+    ret.calib_path = strdup(s);
+    s += strlen(ret.calib_path)+1;
+    /* calculate all the space this takes */
+    ret.config_str_len = s-(char *)p;
+  }else if(ret.calib_alg == AGIPD_v2){
+    ret.alg_config = malloc(sizeof(AGIPD_v2_config_t));
+    /* get cell_id, image_id and calibration_shape */
+    ((AGIPD_v2_config_t *)ret.alg_config)->cell_id = u[3];
+    ret.image_id = u[4];
+    ret.calib_shape = malloc(sizeof(hsize_t)*4);
+    ret.calib_shape[0] = u[5];
+    ret.calib_shape[1] = u[6];
+    ret.calib_shape[2] = u[7];
+    ret.calib_shape[3] = 8;
     /* and finally the raw and calib paths */
     char * s = (char *)(u+8);
     ret.raw_path = strdup(s);
@@ -167,8 +211,15 @@ static void setup_cache(calib_config_t ret){
 
 static void apply_calibration(float * raw_data, float * calib_data, calib_config_t conf){
   int image_size = conf.calib_shape[1]*conf.calib_shape[2];
-  for(int i = 0; i<image_size; i++){
-    raw_data[i] -= calib_cache.data[conf.cell_id*image_size+i];
+  if(conf.calib_alg == PEDESTAL_v1){
+    for(int i = 0; i<image_size; i++){
+      raw_data[i] -= calib_cache.data[i];
+    }
+  }else  if(conf.calib_alg == AGIPD_v1){
+    AGIPD_v1_config_t alg_conf = *((AGIPD_v1_config_t *)conf.alg_config);
+    for(int i = 0; i<image_size; i++){
+      raw_data[i] -= calib_cache.data[alg_conf.cell_id*image_size+i];
+    }
   }
 }
  
@@ -193,19 +244,17 @@ static size_t H5Z_filter_calib(unsigned int flags, size_t cd_nelmts,
     /* Read out calibrated data */
     // All the magic will happen here
     calib_config_t conf = str_to_config(*buf);
-    if(conf.calib_alg == AGIPD_v1){
-      setup_cache(conf);
-      float * c = *buf;
-      output_buffer = malloc(sizeof(float)*conf.calib_shape[1]*conf.calib_shape[2]);
-      float * raw_data = (float *) output_buffer;
-      hsize_t start[3] = {conf.image_id,0,0};
-      hsize_t count[3] = {1, conf.calib_shape[1], conf.calib_shape[2]};
-      hid_t mem_ds = H5Screate_simple(3,count,count);
-      hid_t file_ds = H5Dget_space(raw_cache.dataset);
-      H5Sselect_hyperslab(file_ds, H5S_SELECT_SET, start, NULL, count, NULL);
-      H5Dread(raw_cache.dataset, H5T_NATIVE_FLOAT, mem_ds, file_ds, H5P_DEFAULT, raw_data);
-      apply_calibration(raw_data, calib_cache.data, conf);
-    }
+    setup_cache(conf);
+    float * c = *buf;
+    output_buffer = malloc(sizeof(float)*conf.calib_shape[1]*conf.calib_shape[2]);
+    float * raw_data = (float *) output_buffer;
+    hsize_t start[3] = {conf.image_id,0,0};
+    hsize_t count[3] = {1, conf.calib_shape[1], conf.calib_shape[2]};
+    hid_t mem_ds = H5Screate_simple(3,count,count);
+    hid_t file_ds = H5Dget_space(raw_cache.dataset);
+    H5Sselect_hyperslab(file_ds, H5S_SELECT_SET, start, NULL, count, NULL);
+    H5Dread(raw_cache.dataset, H5T_NATIVE_FLOAT, mem_ds, file_ds, H5P_DEFAULT, raw_data);
+    apply_calibration(raw_data, calib_cache.data, conf);
 #ifndef NDEBUG
     fprintf(stdout,"[debug] h5calib: decompressed %zu bytes\n",*buf_size);
 #endif
