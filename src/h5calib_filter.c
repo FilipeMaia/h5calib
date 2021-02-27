@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <H5PLextern.h>
 
 
@@ -10,6 +11,9 @@ static size_t H5Z_filter_calib(unsigned int flags, size_t cd_nelmts,
 			       size_t *buf_size, void **buf);
 
 #define CACHE_CALIB
+
+#define AGIPD_v1 0x00010001ull
+#define H5CALIB_MAGIC 0x6290D662ull
 
 const H5Z_class2_t H5Z_calib[1] = {
   {
@@ -44,6 +48,8 @@ typedef struct calib_config_t {
   int config_str_len;
   char * raw_path;
   char * calib_path;
+  uint32_t file_magic;
+  uint32_t calib_alg;
   hsize_t cell_id;
   hsize_t image_id;
   hsize_t * calib_shape;  
@@ -62,88 +68,60 @@ static dataset_cache_t raw_cache;
 static dataset_cache_t calib_cache;
 
 
-static hid_t find_calib_file(int id){
+static hid_t find_calib_file(int id, uint32_t file_magic){
   ssize_t n = H5Fget_obj_count((hid_t)H5F_OBJ_ALL, H5F_OBJ_FILE);
   hid_t * obj_id_list = (hid_t *)malloc(sizeof(hid_t)*n);
   hid_t ret = 0;
   H5Fget_obj_ids((hid_t)H5F_OBJ_ALL,H5F_OBJ_FILE,n,obj_id_list);
-  if(n == 1){
-    ret = obj_id_list[0];
-  }else{
-    printf("number of open files %zd\n", n);
+  for(int i = 0; i < n; i++){
+    if(H5Aexists(obj_id_list[i], "h5calib_file_magic")){
+      hid_t attr = H5Aopen(obj_id_list[i], "h5calib_file_magic", H5P_DEFAULT);
+      uint32_t magic;     
+      H5Aread(attr, H5T_NATIVE_UINT, &magic);
+      if(magic == file_magic){
+	ret = obj_id_list[i];
+      }
+    }
+  }
+  if(ret == 0){
+    fprintf(stderr, "h5calib error: Could not find file with attribute h5calib_file_magic = %ul", file_magic);
   }
   free(obj_id_list);
   return ret;
 }
 
-static char * get_dataset_path(float * c){
-  int len = 0;
-  float * s = c;
-  while(*c != -1){
-    c++;
-    len++;
-  }
-  
-  char * path = (char *)malloc(sizeof(char)*(len+1));
-  c = s;
-  for(int i = 0;i<len;i++){
-    path[i] = *c;
-    c++;
-  }
-  /* zero terminate path */
-  path[len] = 0;
-
-  return path;
-}
-
-static hsize_t * get_calib_shape(float * c){
-  int len = 0;
-  float * s = c;
-
-
-  while(*c != -1){
-    c++;
-    len++;
-  }
-  
-  hsize_t * shape = (hsize_t *)malloc(sizeof(hsize_t)*(len));
-  c = s;
-  for(int i = 0;i<len;i++){
-    shape[i] = *c;
-    c++;
-  }
-  return shape;
-}
-
-static calib_config_t str_to_config(float * c){
-  calib_config_t ret;
+static calib_config_t str_to_config(void * p){
+  calib_config_t ret;  
   ret.config_str_len = 0;
-  /* The first part of the data contains the path to the raw dataset
-     Let's parse it
-  */
-  char * path = get_dataset_path(c);
-  /* increment c to the start of the next dataset */
-  ret.config_str_len += strlen(path)+1;
-  c += strlen(path)+1;
-  ret.raw_path = path;
+  /* First check for the h5calib magic */
+  uint32_t * u = (uint32_t *)p;
+  if(u[0] != H5CALIB_MAGIC){
+    return ret;
+  }
+  /* Now get the dataset magic and the calibration algorithm number */
+  ret.file_magic = u[1];
+  ret.calib_alg = u[2];
 
-  /* The second part of the data contains the path to the calibration constants dataset
-     Let's parse it
-  */
-  path = get_dataset_path(c);
-  /* increment c to the start of the next dataset */
-  ret.config_str_len += strlen(path)+1;
-  c += strlen(path)+1;
-  ret.calib_path = path;
-
-
-  ret.cell_id = *c;
-  c++;
-  ret.image_id = *c;
-  c++;
-  ret.calib_shape = get_calib_shape(c);
-  /* 3 for the image_shape 3 for cell_id, image_id plus 1 for the closing -1 */
-  ret.config_str_len += 6;
+  /* Currently we only have one calibration algorithm, AGIPD_v1 */
+  if(ret.calib_alg == AGIPD_v1){
+    /* get cell_id, image_id and calibration_shape */
+    ret.cell_id = u[3];
+    ret.image_id = u[4];
+    ret.calib_shape = malloc(sizeof(hsize_t)*3);
+    ret.calib_shape[0] = u[5];
+    ret.calib_shape[1] = u[6];
+    ret.calib_shape[2] = u[7];
+    /* and finally the raw and calib paths */
+    char * s = (char *)(u+8);
+    ret.raw_path = strdup(s);
+    s += strlen(ret.raw_path)+1;
+    ret.calib_path = strdup(s);
+    s += strlen(ret.calib_path)+1;
+    /* calculate all the space this takes */
+    ret.config_str_len = s-(char *)p;
+  }else{
+    fprintf(stderr, "h5calib error: Unknown calibration algorithm - %ul\n", ret.calib_alg);
+  }
   return ret;
 }
 
@@ -153,7 +131,7 @@ static void setup_cache(calib_config_t ret){
      with a different path 
   */
   if(raw_cache.path == NULL || strcmp(ret.raw_path,raw_cache.path) != 0){
-    hid_t file = find_calib_file(0);
+    hid_t file = find_calib_file(0, ret.file_magic);
     printf("Reading %s from %lld\n", ret.raw_path, file);
     hid_t dataset = H5Dopen(file,ret.raw_path,H5P_DEFAULT);
     hid_t ds = H5Dget_space(dataset);
@@ -172,7 +150,7 @@ static void setup_cache(calib_config_t ret){
      with a different path 
   */
   if(calib_cache.path == NULL || strcmp(ret.calib_path,calib_cache.path) != 0){
-    hid_t file = find_calib_file(0);
+    hid_t file = find_calib_file(0, ret.file_magic);
     //hid_t file = H5Fopen("/Users/filipe/src/h5calib/tests/comp.h5",H5F_ACC_RDONLY,H5P_DEFAULT);
     hid_t dataset = H5Dopen(file,ret.calib_path,H5P_DEFAULT);
     free(calib_cache.path);
@@ -215,17 +193,19 @@ static size_t H5Z_filter_calib(unsigned int flags, size_t cd_nelmts,
     /* Read out calibrated data */
     // All the magic will happen here
     calib_config_t conf = str_to_config(*buf);
-    setup_cache(conf);
-    float * c = *buf;
-    output_buffer = malloc(sizeof(float)*conf.calib_shape[1]*conf.calib_shape[2]);
-    float * raw_data = (float *) output_buffer;
-    hsize_t start[3] = {conf.image_id,0,0};
-    hsize_t count[3] = {1, conf.calib_shape[1], conf.calib_shape[2]};
-    hid_t mem_ds = H5Screate_simple(3,count,count);
-    hid_t file_ds = H5Dget_space(raw_cache.dataset);
-    H5Sselect_hyperslab(file_ds, H5S_SELECT_SET, start, NULL, count, NULL);
-    H5Dread(raw_cache.dataset, H5T_NATIVE_FLOAT, mem_ds, file_ds, H5P_DEFAULT, raw_data);
-    apply_calibration(raw_data, calib_cache.data, conf);
+    if(conf.calib_alg == AGIPD_v1){
+      setup_cache(conf);
+      float * c = *buf;
+      output_buffer = malloc(sizeof(float)*conf.calib_shape[1]*conf.calib_shape[2]);
+      float * raw_data = (float *) output_buffer;
+      hsize_t start[3] = {conf.image_id,0,0};
+      hsize_t count[3] = {1, conf.calib_shape[1], conf.calib_shape[2]};
+      hid_t mem_ds = H5Screate_simple(3,count,count);
+      hid_t file_ds = H5Dget_space(raw_cache.dataset);
+      H5Sselect_hyperslab(file_ds, H5S_SELECT_SET, start, NULL, count, NULL);
+      H5Dread(raw_cache.dataset, H5T_NATIVE_FLOAT, mem_ds, file_ds, H5P_DEFAULT, raw_data);
+      apply_calibration(raw_data, calib_cache.data, conf);
+    }
 #ifndef NDEBUG
     fprintf(stdout,"[debug] h5calib: decompressed %zu bytes\n",*buf_size);
 #endif
@@ -236,12 +216,17 @@ static size_t H5Z_filter_calib(unsigned int flags, size_t cd_nelmts,
        Let's parse it
      */
     calib_config_t conf = str_to_config(*buf);
-    *buf_size = sizeof(float)*conf.config_str_len;
-    output_buffer = malloc(sizeof(char)*(*buf_size));
-    memcpy(output_buffer,*buf,*buf_size);
+    if(conf.config_str_len == 0){
+      fprintf(stderr, "h5calib warning: Cannot write to read-only dataset\n");
+      
+    }else{
+      *buf_size = conf.config_str_len;
+      output_buffer = malloc(sizeof(char)*(*buf_size));
+      memcpy(output_buffer,*buf,*buf_size);
 #ifndef NDEBUG
-    fprintf(stdout, "[debug] h5calib: encoded %zu bytes into %zu bytes for a ratio of %f\n", nbytes, *buf_size, ((float)*buf_size)/nbytes);
+      fprintf(stdout, "[debug] h5calib: encoded %zu bytes into %zu bytes for a ratio of %f\n", nbytes, *buf_size, ((float)*buf_size)/nbytes);
 #endif
+    }
   }
   if(!output_buffer){
     return 0;
