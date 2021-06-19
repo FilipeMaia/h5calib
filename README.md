@@ -32,7 +32,7 @@ The last two datasets are combined to create a `processed` dataset, with a cell 
 
 ## Notes and limitations
 
-Creating the processed datasets is complex, but accessing them is transparent.
+Creating the processed datasets is complex, but accessing them is transparent. Check the documentation of `create_processed` in `comp.py` for details on how the dataset is created.
 
 There is some skeleton code for an `AGIPD_v2` algorithm, taking into account, gain levels, but it's not yet finished.
 
