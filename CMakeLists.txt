@@ -5,4 +5,3 @@ project (h5hcalib)
 find_package(HDF5 REQUIRED)
 
 ADD_SUBDIRECTORY(src)
-ADD_SUBDIRECTORY(tests)
