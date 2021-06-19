@@ -1,5 +1,7 @@
 # h5calib
-HDF5 filter for generating calibrated data on the fly from raw data
+HDF5 filter for generating calibrated data on the fly from raw data and calibration constants.
+
+It creates a read-only dataset which contains only the metadata to reach the raw and calibration data, as what algorithm to use to apply the calibration constant on the raw data to produce the processed data.
 
 ## To compile the filter
 
