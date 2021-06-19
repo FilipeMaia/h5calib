@@ -49,14 +49,18 @@ def create_processed(parent, shape, name="processed", raw='/raw', calib='/calib'
             # Simple static pedestal correction
             chunk_header = header_base + [pedestal_v1_magic, image_id, shape[1], shape[2]]
             bytes_string = np.array(chunk_header,dtype=np.uint32).tobytes()+raw.encode()+b'\x00'+calib.encode()+b'\x00'
-            bytes_string = bytes_string + b'\x00'*(len(bytes_string)%np.dtype(dtype).itemsize)
+            # Pad with zeros to match dtype length
+            while(len(bytes_string)%np.dtype(dtype).itemsize):
+                bytes_string += b'\x00'
             chunk_header = np.frombuffer(bytes_string, dtype)
         elif(calib_alg == 'AGIPD_v1'):
             # Very basic AGIPD like calibration with only memory cell based pedestal
             cell_id = image_id%n_cells
             chunk_header = header_base + [AGIPD_v1_magic, cell_id, image_id, n_cells, shape[1], shape[2]]
             bytes_string = np.array(chunk_header,dtype=np.uint32).tobytes()+raw.encode()+b'\x00'+calib.encode()+b'\x00'
-            bytes_string = bytes_string + b'\x00'*(len(bytes_string)%np.dtype(dtype).itemsize)
+            # Pad with zeros to match dtype length
+            while(len(bytes_string)%np.dtype(dtype).itemsize):
+                bytes_string += b'\x00'
             chunk_header = np.frombuffer(bytes_string, dtype)
         elif(calib_alg == 'AGIPD_v2'):
             # More realistic AGIPD calibration. The raw data now has a final dimension of 2, the signal and the gain.
@@ -66,7 +70,9 @@ def create_processed(parent, shape, name="processed", raw='/raw', calib='/calib'
             cell_id = image_id%n_cells
             chunk_header = header_base + [AGIPD_v2_magic, cell_id, image_id, n_cells, shape[1], shape[2]]
             bytes_string = np.array(chunk_header,dtype=np.uint32).tobytes()+raw.encode()+b'\x00'+calib.encode()+b'\x00'
-            bytes_string = bytes_string + b'\x00'*(len(bytes_string)%np.dtype(dtype).itemsize)
+            # Pad with zeros to match dtype length
+            while(len(bytes_string)%np.dtype(dtype).itemsize):
+                bytes_string += b'\x00'
             chunk_header = np.frombuffer(bytes_string, dtype)
         else:
             raise ValueError('%s is not a valid calib_alg' % (calib_alg))
@@ -74,13 +80,36 @@ def create_processed(parent, shape, name="processed", raw='/raw', calib='/calib'
         dset[image_id, 0, :len(chunk_header)] = chunk_header
 
 
-f = h5py.File('comp.h5','w',libver='latest')
+f = h5py.File('comp.h5','w')
 
 nimages = 10
-image_size = 20
+image_size = 12
+
+# Example 1, with an (nimages,image_size,image_size) raw data and a calibration
+# of size (n_cells, image_size, image_size)
+pedestal_data = np.random.randint(low=0, high=100, size=(1,image_size,image_size)).astype(np.uint16)
+dset = f.create_dataset("pedestal", (1, image_size, image_size), data=pedestal_data,
+                        chunks=(1, image_size, image_size),dtype=np.int16)
+
+dset = f.create_dataset("raw1", (nimages, image_size, image_size),
+                        data=pedestal_data+np.ones((nimages,image_size,image_size))*7.0,
+                        chunks=(1, image_size, image_size),dtype=np.int16)
+
+
+create_processed(f, (nimages, image_size, image_size), "proc_pedestal", raw="/raw1", calib="/pedestal", calib_alg="pedestal_v1")
+
+f.close()
+f = h5py.File('comp.h5','r')
+print(f['/proc_pedestal'][0])
+
+f.close()
+f = h5py.File('comp.h5','r+')
+
+# Example 2, with an (nimages,image_size,image_size) raw data and a calibration
+# of size (n_cells, image_size, image_size)
 data = np.ones((nimages,image_size,image_size),dtype=np.float32)
 data[:] = np.linspace(0,nimages,nimages,endpoint=False).reshape((nimages,1,1))
-dset = f.create_dataset("raw", (nimages, image_size, image_size), data=data,
+dset = f.create_dataset("raw2", (nimages, image_size, image_size), data=data,
                         chunks=(1, image_size, image_size),dtype=np.int16)
 n_cells = 2
 calib_data = np.ones((n_cells, image_size,image_size),dtype=np.float32)
@@ -88,28 +117,16 @@ calib_data[:] = np.linspace(0,n_cells,n_cells,endpoint=False).reshape((n_cells,1
 dset = f.create_dataset("calib", (n_cells, image_size, image_size), data=calib_data,
                         chunks=(1, image_size, image_size),dtype=np.float32)
 
-pedestal_data = np.random.random((1,image_size,image_size)).astype(np.float32)
-dset = f.create_dataset("pedestal", (1, image_size, image_size), data=pedestal_data,
-                        chunks=(1, image_size, image_size),dtype=np.float32)
+create_processed(f, (nimages, image_size, image_size), "processed", raw="/raw2")
 
-dset = f.create_dataset("raw_pedestal", (nimages, image_size, image_size), data=pedestal_data+np.ones((nimages,image_size,image_size))*7.0,
-                        chunks=(1, image_size, image_size),dtype=np.float32)
-
-create_processed(f, (nimages, image_size, image_size), "processed")
-
-create_processed(f, (nimages, image_size, image_size), "proc_pedestal", raw="/raw_pedestal", calib="/pedestal", calib_alg="pedestal_v1")
-
-#f.close()
-#f = h5py.File('comp.h5','r')
-data_out = f['/processed'][5]
-print(data_out)
-data_out = f['/processed'][6]
-print(data_out)
-data_out = f['/processed'][7]
-print(data_out)
-
-f['/processed'][7] = 0
-
-print(f['/raw_pedestal'][7])
-print(f['/proc_pedestal'][7])
 f.close()
+f = h5py.File('comp.h5','r')
+data_out = f['/processed'][3]
+print(data_out)
+
+
+# Trying to write to one of the "filter compressed" datasets.
+# This will result in the warning from the filter as the datasets are read-only
+f.close()
+f = h5py.File('comp.h5','r+')
+f['/processed'][7] = 0
