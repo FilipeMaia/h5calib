@@ -1,7 +1,7 @@
 # h5calib
 HDF5 filter for generating calibrated data on the fly from raw data and calibration constants.
 
-It creates a read-only dataset which contains only the metadata to reach the raw and calibration data, as what algorithm to use to apply the calibration constant on the raw data to produce the processed data.
+It creates a read-only dataset which contains only the metadata to reach the raw and calibration data, and which algorithm to use to apply the calibration constant on the raw data to produce the processed data.
 
 ## To compile the filter
 
@@ -37,6 +37,8 @@ The last two datasets are combined to create a `processed` dataset, with a cell 
 Creating the processed datasets is complex, but accessing them is transparent. Check the documentation of `create_processed` in `comp.py` for details on how the dataset is created.
 
 There is some skeleton code for an `AGIPD_v2` algorithm, taking into account, gain levels, but it's not yet finished.
+
+In the current design the data must be chunked image by image! The current API of HDF5 filters does not give the filter much information about where in the dataset the data is being read from, and this was the simplest way around it.
 
 Currently there is a minimum image size as all the metadata for the compressed dataset is stored in the space corresponding to the first row of the image. If the row is very small the metadata might not fit.
 
