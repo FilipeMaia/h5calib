@@ -14,28 +14,28 @@ def AGIPD_encode(image, cal_const):
     gain_level[image > 100] = 1
     # Arbitrary signal threshold to low gain
     gain_level[image > 500] = 2
-
+    
     raw = np.zeros(image.shape+(2,))
     # We'll take 0 to be signal and 1 to be gain. Don't remember if that's how
     # the real data is laid out.]
-    gains = cal_const[:,:,(3,5,7)]
-    pedestal = cal_const[:,:,(2,4,6)]
-    pixel_gain = np.take_along_axis(cal_const,3+gain_level[...,np.newaxis]*2,2)
+    pixel_gain = np.take_along_axis(cal_const,3+gain_level[...,np.newaxis]*2,axis=2)
     # Remove trailing dimension size 1
     pixel_gain = pixel_gain.reshape(image.shape)
-    pixel_pedestal = np.take_along_axis(cal_const,2+gain_level[...,np.newaxis]*2,2)
+    
+    pixel_pedestal = np.take_along_axis(cal_const,2+gain_level[...,np.newaxis]*2,axis=2)
     # Remove trailing dimension size 1
     pixel_pedestal = pixel_pedestal.reshape(image.shape)
-    
-    raw[:,:,0] = image/pixel_gain + pixel_pedestal
 
-    pixel_threshold = np.take_along_axis(cal_const,gain_level[...,np.newaxis],2)
+    raw[:,:,0] = image*pixel_gain + pixel_pedestal
+
+    pixel_threshold = np.take_along_axis(cal_const,gain_level[...,np.newaxis],axis=2)
     # Remove trailing dimension size 1
-    pixel_threshold = pixel_pedestal.reshape(image.shape)
+    pixel_threshold = pixel_threshold.reshape(image.shape)
     # For simplicity for the gain value I'll only take 1 value below the threshold
     raw[:,:,1] = pixel_threshold-1
     # We need to treat low gain specially, in this case 1 above the threshold
     raw[gain_level == 2,1] = cal_const[gain_level == 2, 1] + 1
+
     return raw
 
 def AGIPD_gen_calibration_constants(img_shape, ncells):
@@ -45,28 +45,28 @@ def AGIPD_gen_calibration_constants(img_shape, ncells):
     # For simplicity we'll start with the same constants for all pixels and cells
 
     # High/Med gain threshold
-    cal_const[:,:,0] = 1000
+    cal_const[...,0] = 1000
 
     # Med/Low gain threshold
-    cal_const[:,:,1] = 3000
+    cal_const[...,1] = 3000
 
     # High pedestals
-    cal_const[:,:,2] = 4231
+    cal_const[...,2] = 4231
 
     # High gain
-    cal_const[:,:,3] = 20.3
+    cal_const[...,3] = 20
 
     # Medium pedestals
-    cal_const[:,:,4] = 3232
+    cal_const[...,4] = 3232
 
     # Medium gain
-    cal_const[:,:,5] = 6.2
+    cal_const[...,5] = 6
 
     # Low pedestals
-    cal_const[:,:,6] = 2512
+    cal_const[...,6] = 2512
 
     # Low gain
-    cal_const[:,:,7] = 2.2
+    cal_const[...,7] = 2
 
     return cal_const
 
@@ -120,6 +120,7 @@ def create_processed(parent, shape, name="processed", raw='/raw', calib='/calib'
             while(len(bytes_string)%np.dtype(dtype).itemsize):
                 bytes_string += b'\x00'
             chunk_header = np.frombuffer(bytes_string, dtype)
+
         elif(calib_alg == 'AGIPD_v1'):
             # Very basic AGIPD like calibration with only memory cell based pedestal
             cell_id = image_id%n_cells
@@ -129,6 +130,7 @@ def create_processed(parent, shape, name="processed", raw='/raw', calib='/calib'
             while(len(bytes_string)%np.dtype(dtype).itemsize):
                 bytes_string += b'\x00'
             chunk_header = np.frombuffer(bytes_string, dtype)
+
         elif(calib_alg == 'AGIPD_v2'):
             # More realistic AGIPD calibration. The raw data now has a final dimension of 2, the signal and the gain.
             # The calibration has a leading dimension equal to the number of cells and a final dimension of 8:
@@ -144,14 +146,16 @@ def create_processed(parent, shape, name="processed", raw='/raw', calib='/calib'
         else:
             raise ValueError('%s is not a valid calib_alg' % (calib_alg))
 
-        print(len(chunk_header))
-        dset[image_id, 0, :len(chunk_header)] = chunk_header
+        buf = np.zeros((dset.shape[1],dset.shape[2]),dtype=dset.dtype)
+        buf.flat[:len(chunk_header)] = chunk_header
+        #dset[image_id, 0, :len(chunk_header)] = chunk_header
+        dset[image_id, :, :] = buf
 
 
 f = h5py.File('comp.h5','w')
 
-nimages = 10
-image_size = 14
+nimages = 3
+image_size = 6
 
 # Example 1, with an (nimages,image_size,image_size) raw data and a calibration
 # of size (n_cells, image_size, image_size)
@@ -177,7 +181,7 @@ f = h5py.File('comp.h5','r+')
 # of size (n_cells, image_size, image_size)
 data = np.ones((nimages,image_size,image_size),dtype=np.float32)
 data[:] = np.linspace(0,nimages,nimages,endpoint=False).reshape((nimages,1,1))
-dset = f.create_dataset("raw2", (nimages, image_size, image_size), data=data,
+dset = f.create_dataset("raw_v1", (nimages, image_size, image_size), data=data,
                         chunks=(1, image_size, image_size),dtype=np.int16)
 n_cells = 2
 calib_data = np.ones((n_cells, image_size,image_size),dtype=np.float32)
@@ -185,12 +189,18 @@ calib_data[:] = np.linspace(0,n_cells,n_cells,endpoint=False).reshape((n_cells,1
 dset = f.create_dataset("calib", (n_cells, image_size, image_size), data=calib_data,
                         chunks=(1, image_size, image_size),dtype=np.float32)
 
-create_processed(f, (nimages, image_size, image_size), "processed", raw="/raw2")
+create_processed(f, (nimages, image_size, image_size), "processed", raw="/raw_v1")
 
 f.close()
 f = h5py.File('comp.h5','r')
-data_out = f['/processed'][3]
+data_out = f['/processed'][2]
 print(data_out)
+
+f.close()
+f = h5py.File('comp.h5','r')
+data_out = f['/processed'][2]
+print(data_out)
+import sys
 
 f.close()
 f = h5py.File('comp.h5','r+')
@@ -200,27 +210,27 @@ f = h5py.File('comp.h5','r+')
 # That last 8 corresponds to 
 data = np.ones((nimages,image_size,image_size),dtype=np.float32)
 data[:] = np.linspace(0,image_size**2,image_size**2,endpoint=False).reshape((1,image_size,image_size))
-
-raw_data = np.ones((nimages,image_size,image_size,2),dtype=np.uint16)
+raw_data = np.ones((nimages,image_size,image_size,2),dtype=np.int16)
 
 cal_const = AGIPD_gen_calibration_constants((image_size, image_size), n_cells)
 for i in range(0,nimages):
     cell = nimages%n_cells
     raw_data[i] = AGIPD_encode(data[i], cal_const[cell])
 
-dset = f.create_dataset("raw_v2", (nimages, image_size, image_size), data=data,
-                        chunks=(1, image_size, image_size),dtype=np.int16)
+dset = f.create_dataset("raw_v2", (nimages, image_size, image_size, 2),
+                        data=raw_data,
+                        chunks=(1, image_size, image_size, 2),dtype=np.int16)
 n_cells = 2
 calib_data = np.ones((n_cells, image_size,image_size),dtype=np.float32)
 calib_data[:] = np.linspace(0,n_cells,n_cells,endpoint=False).reshape((n_cells,1,1))
 dset = f.create_dataset("calib_v2", (n_cells, image_size, image_size,8), data=cal_const,
                         chunks=(1, image_size, image_size, 8),dtype=np.float32)
 
-create_processed(f, (nimages, image_size, image_size), "processed_v2", raw="/raw_v2", calib="/calib_v2", calib_alg = 'AGIPD_v2')
+create_processed(f, (nimages, image_size, image_size), name="processed_v2", raw="/raw_v2", calib="/calib_v2", calib_alg = 'AGIPD_v2')
 
 f.close()
 f = h5py.File('comp.h5','r')
-data_out = f['/processed'][3]
+data_out = f['/processed_v2'][0]
 print(data_out)
 
 
@@ -228,4 +238,4 @@ print(data_out)
 # This will result in the warning from the filter as the datasets are read-only
 f.close()
 f = h5py.File('comp.h5','r+')
-f['/processed'][7] = 0
+f['/processed'][2] = 0
