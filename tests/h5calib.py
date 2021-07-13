@@ -15,7 +15,7 @@ def AGIPD_encode(image, cal_const):
     # Arbitrary signal threshold to low gain
     gain_level[image > 500] = 2
     
-    raw = np.zeros(image.shape+(2,))
+    raw = np.zeros(image.shape+(2,),dtype=np.float32)
     # We'll take 0 to be signal and 1 to be gain. Don't remember if that's how
     # the real data is laid out.]
     pixel_gain = np.take_along_axis(cal_const,3+gain_level[...,np.newaxis]*2,axis=2)
@@ -41,7 +41,7 @@ def AGIPD_encode(image, cal_const):
 def AGIPD_gen_calibration_constants(img_shape, n_cells):
     """Generate some fake AGIPD calibration constants"""
     
-    cal_const = np.zeros(((n_cells,)+img_shape+(8,)))
+    cal_const = np.zeros(((n_cells,)+img_shape+(8,)),dtype=np.float16)
     # For simplicity we'll start with the same constants for all pixels and cells
 
     # High/Med gain threshold

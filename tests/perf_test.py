@@ -20,7 +20,7 @@ def drop_cache():
 
 f = h5py.File(fname,'w')
 
-nimages = 500
+nimages = 400
 image_size = 1024
 n_cells = 352
 
@@ -29,7 +29,7 @@ print("Generating raw data...", end='\r')
 # Example 3, with an (nimages,image_size,image_size) raw data and a calibration
 # of size (n_cells, image_size, image_size, 8) using AGIPD_v2.
 # That last 8 corresponds to 
-data = np.ones((nimages,image_size,image_size),dtype=np.float32)
+data = np.ones((nimages,image_size,image_size),dtype=np.float16)
 data[:] = np.linspace(0,image_size**2,image_size**2,endpoint=False).reshape((1,image_size,image_size))
 raw_data = np.ones((nimages,image_size,image_size,2),dtype=np.int16)
 
@@ -38,18 +38,18 @@ for i in range(0,nimages):
     cell = nimages%n_cells
     raw_data[i] = h5calib.AGIPD_encode(data[i], cal_const[cell])
 print("Generating raw data...done")
-
+del data
 
 print("Writing raw data and calibration constants...", end='\r')
 dset = f.create_dataset("raw_v2", (nimages, image_size, image_size, 2),
                         data=raw_data,
                         chunks=(1, image_size, image_size, 2),dtype=np.int16)
 
-
-calib_data = np.ones((n_cells, image_size,image_size),dtype=np.float32)
-calib_data[:] = np.linspace(0,n_cells,n_cells,endpoint=False).reshape((n_cells,1,1))
+del raw_data
 dset = f.create_dataset("calib_v2", (n_cells, image_size, image_size,8), data=cal_const,
                         chunks=(1, image_size, image_size, 8),dtype=np.float32)
+
+del cal_const
 
 print("Writing raw dataset and calibration constants...done")
 
@@ -61,15 +61,17 @@ print("Writing calibrated dataset...done")
 
 f = h5py.File(fname,'r')
 import time
-drop_cache()
+#drop_cache()
 t = time.time()
 raw_data_out = np.array(f['/raw_v2'])
-del raw_data_out
 dt = time.time()-t
 print("Raw read in %s s", dt)
-drop_cache()
+print("%d MB/s" % (raw_data_out.nbytes/(1024**2 * dt)))
+del raw_data_out
+#drop_cache()
 t = time.time()
 data_out = np.array(f['/processed_v2'])
 dt = time.time()-t
 print("Calibrated read in %s s", dt)
+print("%d MB/s" % (data_out.nbytes/(1024**2 * dt)))
 
